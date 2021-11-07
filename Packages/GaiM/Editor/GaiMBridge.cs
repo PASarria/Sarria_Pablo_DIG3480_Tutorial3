@@ -5,9 +5,12 @@ using System.IO;
 using System.Text;
 using Unity.EditorCoroutines.Editor;
 using UnityEditor;
-using UnityEditor.TestTools.TestRunner.Api;
 using UnityEngine;
 using UnityEngine.Networking;
+using UnityEditor.TestTools.TestRunner.Api;
+#if GAIM_SYNC
+using WebSocketSharp;
+#endif
 
 namespace edu.ucf.gaim
 {
@@ -21,9 +24,9 @@ namespace edu.ucf.gaim
     }
     // ensure class initializer is called whenever scripts recompile
     [InitializeOnLoadAttribute]
-    public static class GaiMBridge
+    [ExecuteAlways]
+    public class GaiMBridge
     {
-        public static string HOST = "https://cf.gaim.dev";
         public static long epochTicks = new DateTime(1970, 1, 1).Ticks;
         public static string output = "";
         public static string stack = "";
@@ -39,95 +42,74 @@ namespace edu.ucf.gaim
         public static int logCount = 0;
         static LogMessage lm;
 
-        private class MyCallbacks : ICallbacks
+        public class MyCallbacks : ICallbacks
         {
             public void RunStarted(ITestAdaptor testsToRun)
             {
+                // Debug.Log("Run started");
                 HandleLog("{\"count\":" + testsToRun.TestCaseCount + ", \"state\": 5}", "run_started", "4");
             }
 
             public void RunFinished(ITestResultAdaptor result)
             {
-
+                // Debug.Log("Run finished");
                 HandleLog("{\"count\":" + result.PassCount + ", \"state\":" + result.ResultState + "}", "run_finished", "4");
             }
 
             public void TestStarted(ITestAdaptor test)
             {
+                // Debug.Log("Test Started");
                 HandleLog("{\"id\":" + test.Id + "}", "test_started", "5");
             }
 
             public void TestFinished(ITestResultAdaptor result)
             {
-                HandleLog("{\"id\":" + result.Test.Id + ", \"state\":" + result.ResultState + "}", "5");
+                if (!result.Test.IsSuite && !result.Test.IsTestAssembly)
+                {
+                    HandleLog("{\"id\":" + result.Test.Id + ", \"state\":" + result.ResultState + "}", "5");
+                }
             }
         }
+
+
+        static GaiMBridge instance = new GaiMBridge();
         /// <summary>
         /// This function is called when this object becomes enabled and active
         /// </summary>
         static GaiMBridge()
         {
-            string[] s = Application.dataPath.Split('/');
-            string projectName = s[s.Length - 2];
-            if (!EditorPrefs.HasKey("secret-" + projectName) || EditorPrefs.GetString("secret-" + projectName).Length == 0)
-            {
-                UnityEditor.EditorApplication.playModeStateChanged += LogPlayModeState;
-                var secretPath = Application.dataPath.Substring(0, Application.dataPath.Length - 7) + "/.ucf/.secret";
-                if (File.Exists(secretPath))
-                {
-                    StreamReader sr = new StreamReader(secretPath, false);
-                    secret = sr.ReadLine();
-                    sr.Close();
-                    EditorPrefs.SetString("secret-" + projectName, secret);
-                }
-            }
-            if (!EditorPrefs.HasKey("repo-" + projectName) || EditorPrefs.GetString("repo-" + projectName).Length == 0)
-            {
-                var repoPath = Application.dataPath.Substring(0, Application.dataPath.Length - 7) + "/.ucf/.repo";
-                if (File.Exists(repoPath))
-                {
-                    StreamReader sr = new StreamReader(repoPath, false);
-                    repo = sr.ReadLine();
-                    sr.Close();
-                    EditorPrefs.SetString("repo-" + projectName, repo);
-                }
-            }
-            else
-            {
-                secret = EditorPrefs.GetString("secret-" + projectName);
-                repo = EditorPrefs.GetString("repo-" + projectName);
-            }
-            Application.logMessageReceived += HandleAppLog;
-            var api = ScriptableObject.CreateInstance<TestRunnerApi>();
-            api.RegisterCallbacks(new MyCallbacks());
-            EditorApplication.playModeStateChanged += LogPlayModeState;
-            EditorApplication.wantsToQuit += Quit;
-            HandleLog("Reload/Start", "", "9");
-            File.WriteAllText(Application.dataPath.Substring(0, Application.dataPath.Length - 7) + "/.ucf/.running", "Running");
+
         }
         static bool Quit()
         {
             HandleLog("Application Quit", "", "9");
-            File.Delete(Application.dataPath.Substring(0, Application.dataPath.Length - 7) + "/.ucf/.running");
-            lm = new LogMessage
+            try
             {
-                st = "",
-                src = "unity",
-                msg = "Application Quit",
-                type = "9"
-            };
-            logMessages.log.Clear();
-            logMessages.log.Add(lm);
-            var url = HOST + "/git/event";
-            var request = new UnityWebRequest(url, "POST");
-            byte[] bodyRaw = Encoding.UTF8.GetBytes(JsonUtility.ToJson(logMessages));
-            request.uploadHandler = (UploadHandler)new UploadHandlerRaw(bodyRaw);
-            // request.downloadHandler = (DownloadHandler)new DownloadHandlerBuffer();
-            // Debug.Log("secret: " + secret);
-            request.SetRequestHeader("Content-Type", "application/json");
-            request.SetRequestHeader("secret", secret);
-            request.SetRequestHeader("repo", repo);
-            request.SendWebRequest();
+                File.Delete(Application.dataPath.Substring(0, Application.dataPath.Length - 7) + "/.ucf/.running");
+                lm = new LogMessage
+                {
+                    st = "",
+                    src = "unity",
+                    msg = "Application Quit",
+                    type = "9"
+                };
+                logMessages.log.Clear();
+                logMessages.log.Add(lm);
+                var url = "https://cf.gaim.dev/git/event";
+                var request = new UnityWebRequest(url, "POST");
+                byte[] bodyRaw = Encoding.UTF8.GetBytes(JsonUtility.ToJson(logMessages));
+                request.uploadHandler = (UploadHandler)new UploadHandlerRaw(bodyRaw);
+                // request.downloadHandler = (DownloadHandler)new DownloadHandlerBuffer();
+                // Debug.Log("secret: " + secret);
+                request.SetRequestHeader("Content-Type", "application/json");
+                request.SetRequestHeader("secret", secret);
+                request.SetRequestHeader("repo", repo);
+                request.SendWebRequest();
+            }
+            catch
+            {
+
+            }
             return true;
         }
         // register an event handler when the class is initialized
@@ -158,7 +140,14 @@ namespace edu.ucf.gaim
         private static void DidReloadScripts()
         {
             HandleLog("{\"compiled\":true}", "", "compiled");
-            File.Delete(Application.dataPath.Substring(0, Application.dataPath.Length - 7) + "/.ucf/.compilerError");
+            try
+            {
+                File.Delete(Application.dataPath.Substring(0, Application.dataPath.Length - 7) + "/.ucf/.compilerError");
+            }
+            catch
+            {
+
+            }
         }
         private static String prettyPrintErrors()
         {
@@ -179,8 +168,8 @@ namespace edu.ucf.gaim
             // request.downloadHandler = (DownloadHandler)new DownloadHandlerBuffer();
             // Debug.Log("secret: " + secret);
             request.SetRequestHeader("Content-Type", "application/json");
-            request.SetRequestHeader("x-cf-secret", secret);
-            request.SetRequestHeader("x-cf-repo", repo);
+            request.SetRequestHeader("secret", secret);
+            request.SetRequestHeader("repo", repo);
             yield return request.SendWebRequest();
         }
         // keep a copy of the executing script
@@ -190,14 +179,22 @@ namespace edu.ucf.gaim
         {
             yield return new EditorWaitForSeconds(waitTime);
             var errorText = prettyPrintErrors();
-            EditorCoroutineUtility.StartCoroutineOwnerless(Post(HOST + "/git/event", JsonUtility.ToJson(logMessages)));
-            if (logMessages.log.Count > 0 && errorText.Length > 0)
+            EditorCoroutineUtility.StartCoroutineOwnerless(Post("https://cf.gaim.dev/git/event", JsonUtility.ToJson(logMessages)));
+            try
             {
-                File.WriteAllText(Application.dataPath.Substring(0, Application.dataPath.Length - 7) + "/.ucf/.compilerError", errorText);
+
+                if (logMessages.log.Count > 0 && errorText.Length > 0)
+                {
+                    File.WriteAllText(Application.dataPath.Substring(0, Application.dataPath.Length - 7) + "/.ucf/.compilerError", errorText);
+                }
+                else
+                {
+                    File.Delete(Application.dataPath.Substring(0, Application.dataPath.Length - 7) + "/.ucf/.compilerError");
+                }
             }
-            else
+            catch
             {
-                File.Delete(Application.dataPath.Substring(0, Application.dataPath.Length - 7) + "/.ucf/.compilerError");
+
             }
             logMessages.log.Clear();
         }
@@ -231,5 +228,7 @@ namespace edu.ucf.gaim
             }
             // sw.Close();
         }
+
     }
+
 }
